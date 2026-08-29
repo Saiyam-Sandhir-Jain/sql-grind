@@ -350,49 +350,118 @@ def batch_failure_demo():
 # 12. PERFORMANCE CONCEPT
 # ============================================================
 
-def explain_performance():
+def demo_copy_operations():
+    with psycopg.connect(DATABASE_URL) as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                
+                # ============================================================
+                # 1. BULK INGESTION (COPY FROM)
+                # Replaces repetitive INSERTs or executemany()
+                # ============================================================
+                print("--- 1. High-Speed Bulk Ingestion ---")
+                
+                new_employees = [
+                    (201, "Kevin Heart", 85000, 10),
+                    (202, "Laura Croft", 92000, 10),
+                    (203, "Mike Myers", 67000, 20),
+                ]
+                
+                with cur.copy("COPY employee (emp_id, name, salary, dept_id) FROM STDIN") as copy:
+                    for emp in new_employees:
+                        copy.write_row(emp)
+                
+                print(f"Bulk inserted {len(new_employees)} employees via COPY.")
 
-    print("""
-PERFORMANCE
+                # ============================================================
+                # 2. BULK EXTRACTION (COPY TO)
+                # Replaces high-overhead SELECT fetchall() loops
+                # ============================================================
+                # --- 2. High-Speed Extraction (Parsed Tuples) ---
+                print("\n--- 2. High-Speed Extraction ---")
 
-execute():
+                # PostgreSQL sends standard tab-delimited data that copy.rows() can parse into Python objects
+                copy_query = "COPY (SELECT emp_id, name, salary FROM employee WHERE dept_id = 10) TO STDOUT"
 
-    One SQL statement
-    + one parameter set
+                with cur.copy(copy_query) as copy:
+                    print("Streamed output directly from database:")
+                    for row in copy.rows():
+                        print("  ", row)  # Output: (101, 'Alice Smith', 95000)
 
+                # ============================================================
+                # 3. BULK UPDATE VIA COPY (2-Step Pattern)
+                # COPY stream into a TEMP table, then UPDATE in one engine query
+                # ============================================================
+                print("\n--- 3. Bulk Update via COPY ---")
+                
+                # Employee IDs and their new updated salaries
+                salary_updates = [
+                    (101, 105000),  # Alice Smith
+                    (102, 68000),   # Bob Jones
+                    (103, 95000),   # Charlie Brown
+                ]
 
-executemany():
+                # Step A: Create temporary staging table (auto-dropped on transaction commit)
+                cur.execute("CREATE TEMP TABLE temp_salary_updates (emp_id INT, salary INT) ON COMMIT DROP;")
 
-    One SQL template
-    + many parameter sets
+                # Step B: COPY the updates into the staging table (Ultra-fast)
+                with cur.copy("COPY temp_salary_updates (emp_id, salary) FROM STDIN") as copy:
+                    for update in salary_updates:
+                        copy.write_row(update)
 
+                # Step C: Execute single SET UPDATE joining with the temp table
+                cur.execute("""
+                    UPDATE employee e
+                    SET salary = t.salary
+                    FROM temp_salary_updates t
+                    WHERE e.emp_id = t.emp_id;
+                """)
+                print(f"Updated {cur.rowcount} employee salaries using COPY + UPDATE pattern.")
 
-For large-scale bulk loading:
+                # ============================================================
+                # 4. BULK DELETE VIA COPY (2-Step Pattern)
+                # COPY IDs to delete into a TEMP table, then single DELETE
+                # ============================================================
+                print("\n--- 4. Bulk Delete via COPY ---")
+                
+                emp_ids_to_remove = [(105,), (108,)]  # Evan and Hannah
 
-    Consider PostgreSQL COPY.
+                # Step A: Create temp table for IDs to delete
+                cur.execute("CREATE TEMP TABLE temp_deletions (emp_id INT) ON COMMIT DROP;")
 
+                # Step B: STREAM the list of IDs into the database
+                with cur.copy("COPY temp_deletions (emp_id) FROM STDIN") as copy:
+                    for emp_id_tuple in emp_ids_to_remove:
+                        copy.write_row(emp_id_tuple)
 
-Remember:
+                # Step C: Single mass DELETE query
+                cur.execute("""
+                    DELETE FROM employee
+                    WHERE emp_id IN (SELECT emp_id FROM temp_deletions);
+                """)
+                print(f"Deleted {cur.rowcount} employees using COPY + DELETE pattern.")
 
-    executemany()
-        !=
-    one giant INSERT statement
+                # # --- 2. High-Speed Extraction (Raw CSV File/Text) ---
+                # print("\n--- 2. High-Speed Extraction ---")
 
-and:
+                # copy_query = "COPY (SELECT emp_id, name, salary FROM employee WHERE dept_id = 10) TO STDOUT WITH (FORMAT CSV, HEADER)"
 
-    executemany()
-        !=
-    transaction batching
-""")
-
+                # with cur.copy(copy_query) as copy:
+                #     print("Streamed CSV output directly from database:")
+                #     # Read raw byte/text blocks from the COPY stream
+                #     raw_csv_data = copy.read()
+                #     print(raw_csv_data.decode("utf-8"))
+                    
+                #     # Or to write directly to a CSV file:
+                #     # with open("employees.csv", "wb") as f:
+                #     #     while block := copy.read():
+                #     #         f.write(block)
 
 # ============================================================
 # MAIN
 # ============================================================
 
 def main():
-
-    explain_performance()
 
     # Uncomment ONE demonstration at a time.
 
@@ -417,6 +486,9 @@ def main():
     #     with conn.transaction():
     #
     #         batch_insert_returning(conn)
+
+    # Performace operations
+    demo_copy_operations()
 
 
 if __name__ == "__main__":
